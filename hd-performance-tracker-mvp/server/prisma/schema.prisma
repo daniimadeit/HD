@@ -1,0 +1,65 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Student {
+  id         Int              @id @default(autoincrement())
+  firstName  String
+  lastName   String
+  email      String           @unique
+  phone      String?
+  program    String?
+  beltRank   String?
+  active     Boolean          @default(true)
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+  packages   PrivatePackage[]
+  sessions   LessonSession[]
+  notes      ProgressNote[]
+}
+
+model PrivatePackage {
+  id            Int             @id @default(autoincrement())
+  studentId     Int
+  packageName   String
+  totalSessions Int
+  usedSessions  Int             @default(0)
+  pricePaid     Float
+  startDate     DateTime
+  expiresAt     DateTime?
+  status        String          @default("ACTIVE")
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+  student       Student         @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  sessions      LessonSession[]
+}
+
+model LessonSession {
+  id               Int             @id @default(autoincrement())
+  studentId        Int
+  privatePackageId Int?
+  sessionDate      DateTime
+  durationMinutes  Int
+  focusArea        String?
+  notes            String?
+  coachName        String?
+  createdAt        DateTime        @default(now())
+  student          Student         @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  privatePackage   PrivatePackage? @relation(fields: [privatePackageId], references: [id], onDelete: SetNull)
+}
+
+model ProgressNote {
+  id         Int      @id @default(autoincrement())
+  studentId  Int
+  category   String
+  title      String
+  note       String
+  score      Int?
+  createdAt  DateTime @default(now())
+  student    Student  @relation(fields: [studentId], references: [id], onDelete: Cascade)
+}
