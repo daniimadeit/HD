@@ -1,374 +1,404 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api } from './api';
 
-const initialStudentForm = {
-  firstName: '',
-  lastName: '',
-  email: '',
-  phone: '',
-  program: '',
-  beltRank: ''
+const initialMessageForm = {
+  senderName: '',
+  source: 'manual',
+  timestamp: '',
+  content: '',
+  contact: ''
 };
 
-const initialPackageForm = {
-  studentId: '',
-  packageName: '',
-  totalSessions: '',
-  pricePaid: '',
-  startDate: '',
-  expiresAt: ''
+const initialSavedReplyForm = {
+  label: '',
+  text: ''
 };
 
-const initialSessionForm = {
-  studentId: '',
-  privatePackageId: '',
-  sessionDate: '',
-  durationMinutes: '60',
-  focusArea: '',
-  notes: '',
-  coachName: ''
-};
-
-const initialNoteForm = {
-  studentId: '',
-  category: '',
-  title: '',
-  note: '',
-  score: ''
-};
+const priorityOrder = { Urgent: 0, Normal: 1, Low: 2 };
 
 function App() {
-  const [dashboard, setDashboard] = useState({ activeStudents: 0, activePackages: 0, renewalRisk: 0 });
-  const [students, setStudents] = useState([]);
-  const [selectedStudentId, setSelectedStudentId] = useState(null);
-  const [selectedStudent, setSelectedStudent] = useState(null);
-  const [renewals, setRenewals] = useState([]);
+  const [currentView, setCurrentView] = useState('dashboard');
+  const [messages, setMessages] = useState([]);
+  const [selectedMessageId, setSelectedMessageId] = useState(null);
+  const [selectedMessage, setSelectedMessage] = useState(null);
+  const [savedReplies, setSavedReplies] = useState([]);
+  const [settings, setSettings] = useState(null);
+  const [metadata, setMetadata] = useState(null);
   const [error, setError] = useState('');
 
-  const [studentForm, setStudentForm] = useState(initialStudentForm);
-  const [packageForm, setPackageForm] = useState(initialPackageForm);
-  const [sessionForm, setSessionForm] = useState(initialSessionForm);
-  const [noteForm, setNoteForm] = useState(initialNoteForm);
+  const [messageForm, setMessageForm] = useState(initialMessageForm);
+  const [savedReplyForm, setSavedReplyForm] = useState(initialSavedReplyForm);
 
-  const sessionStudentPackages = useMemo(() => {
-    const sessionStudentId = Number(sessionForm.studentId);
-    if (!sessionStudentId) {
-      return [];
-    }
+  const [filters, setFilters] = useState({ status: '', priority: '', category: '', source: '' });
+  const [sort, setSort] = useState('newest');
+  const [quickReplyId, setQuickReplyId] = useState('');
 
-    const matchedStudent = students.find((student) => student.id === sessionStudentId);
-    return matchedStudent?.packages || [];
-  }, [students, sessionForm.studentId]);
-
-  async function loadDashboard() {
-    const data = await api.getDashboard();
-    setDashboard(data);
-  }
-
-  async function loadStudents() {
-    const data = await api.getStudents();
-    setStudents(data);
-
-    if (!selectedStudentId && data.length) {
-      setSelectedStudentId(data[0].id);
-      return;
-    }
-
-    if (selectedStudentId && !data.some((student) => student.id === selectedStudentId)) {
-      setSelectedStudentId(data[0]?.id || null);
-    }
-  }
-
-  async function loadStudentDetails(id) {
-    if (!id) {
-      setSelectedStudent(null);
-      return;
-    }
-
-    const details = await api.getStudent(id);
-    setSelectedStudent(details);
-  }
-
-  async function loadRenewals() {
-    const data = await api.getRenewals();
-    setRenewals(data);
-  }
-
-  async function refreshAll() {
+  async function bootstrap() {
     setError('');
     try {
-      await Promise.all([loadDashboard(), loadStudents(), loadRenewals()]);
+      const [metaDataResp, messagesResp, repliesResp, settingsResp] = await Promise.all([
+        api.getMetadata(),
+        api.getMessages(),
+        api.getSavedReplies(),
+        api.getSettings()
+      ]);
+
+      setMetadata(metaDataResp);
+      setMessages(messagesResp);
+      setSavedReplies(repliesResp);
+      setSettings(settingsResp);
+      if (messagesResp.length && !selectedMessageId) {
+        setSelectedMessageId(messagesResp[0].id);
+      }
     } catch (err) {
-      setError(err.message || 'Failed to load data.');
+      setError(err.message || 'Failed to load app data.');
     }
   }
 
   useEffect(() => {
-    refreshAll();
+    bootstrap();
   }, []);
 
   useEffect(() => {
-    if (!selectedStudentId) {
-      return;
+    async function loadDetail() {
+      if (!selectedMessageId) {
+        setSelectedMessage(null);
+        return;
+      }
+      try {
+        const detail = await api.getMessage(selectedMessageId);
+        setSelectedMessage(detail);
+      } catch (err) {
+        setError(err.message || 'Failed to load message detail.');
+      }
     }
 
-    setError('');
-    loadStudentDetails(selectedStudentId).catch((err) => setError(err.message || 'Failed to load student details.'));
-  }, [selectedStudentId]);
+    loadDetail();
+  }, [selectedMessageId]);
 
-  async function handleCreateStudent(event) {
+  const filteredMessages = useMemo(() => {
+    let result = messages.filter((message) => {
+      return (
+        (!filters.status || message.status === filters.status) &&
+        (!filters.priority || message.priority === filters.priority) &&
+        (!filters.category || message.category === filters.category) &&
+        (!filters.source || message.source === filters.source)
+      );
+    });
+
+    if (sort === 'oldest') {
+      result = [...result].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+    } else if (sort === 'urgent') {
+      result = [...result].sort((a, b) => {
+        const rankDelta = (priorityOrder[a.priority] ?? 3) - (priorityOrder[b.priority] ?? 3);
+        if (rankDelta !== 0) return rankDelta;
+        return new Date(b.timestamp) - new Date(a.timestamp);
+      });
+    } else {
+      result = [...result].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    }
+
+    return result;
+  }, [messages, filters, sort]);
+
+  async function refreshMessages(params = filters) {
+    const data = await api.getMessages({ ...params, sort });
+    setMessages(data);
+  }
+
+  async function handleCreateMessage(event) {
     event.preventDefault();
     setError('');
 
     try {
-      await api.createStudent(studentForm);
-      setStudentForm(initialStudentForm);
-      await refreshAll();
+      const created = await api.createMessage(messageForm);
+      setMessageForm(initialMessageForm);
+      setCurrentView('dashboard');
+      await refreshMessages();
+      setSelectedMessageId(created.id);
     } catch (err) {
-      setError(err.message || 'Failed to create student.');
+      setError(err.message || 'Failed to add message.');
     }
   }
 
-  async function handleCreatePackage(event) {
-    event.preventDefault();
-    setError('');
+  async function handleMessageUpdate(patch) {
+    if (!selectedMessage) return;
 
+    setError('');
     try {
-      await api.createPackage({
-        ...packageForm,
-        studentId: Number(packageForm.studentId),
-        totalSessions: Number(packageForm.totalSessions),
-        pricePaid: Number(packageForm.pricePaid)
-      });
-      setPackageForm(initialPackageForm);
-      await refreshAll();
-      if (selectedStudentId) {
-        await loadStudentDetails(selectedStudentId);
-      }
+      const updated = await api.updateMessage(selectedMessage.id, patch);
+      setSelectedMessage(updated);
+      await refreshMessages();
     } catch (err) {
-      setError(err.message || 'Failed to create package.');
+      setError(err.message || 'Failed to update message.');
     }
   }
 
-  async function handleLogSession(event) {
-    event.preventDefault();
-    setError('');
+  async function handleSendToZapier() {
+    if (!selectedMessage) return;
 
     try {
-      await api.createSession({
-        ...sessionForm,
-        studentId: Number(sessionForm.studentId),
-        privatePackageId: sessionForm.privatePackageId ? Number(sessionForm.privatePackageId) : null,
-        durationMinutes: Number(sessionForm.durationMinutes)
+      await api.sendApprovedToZapier({
+        to: selectedMessage.contact || selectedMessage.senderName,
+        source: selectedMessage.source,
+        message: selectedMessage.draftReply,
+        originalMessageId: selectedMessage.id
       });
-      setSessionForm(initialSessionForm);
-      await refreshAll();
-      if (selectedStudentId) {
-        await loadStudentDetails(selectedStudentId);
-      }
+
+      await handleMessageUpdate({ status: 'Sent' });
     } catch (err) {
-      setError(err.message || 'Failed to log session.');
+      setError(err.message || 'Failed to send approved message to Zapier.');
     }
   }
 
-  async function handleCreateNote(event) {
+  async function handleSavedReplyCreate(event) {
     event.preventDefault();
-    setError('');
 
     try {
-      await api.createNote({
-        ...noteForm,
-        studentId: Number(noteForm.studentId),
-        score: noteForm.score ? Number(noteForm.score) : null
-      });
-      setNoteForm(initialNoteForm);
-      await refreshAll();
-      if (selectedStudentId) {
-        await loadStudentDetails(selectedStudentId);
-      }
+      await api.createSavedReply(savedReplyForm);
+      setSavedReplyForm(initialSavedReplyForm);
+      setSavedReplies(await api.getSavedReplies());
     } catch (err) {
-      setError(err.message || 'Failed to add note.');
+      setError(err.message || 'Failed to create saved reply.');
     }
+  }
+
+  async function handleSavedReplyChange(id, patch) {
+    try {
+      await api.updateSavedReply(id, patch);
+      setSavedReplies(await api.getSavedReplies());
+    } catch (err) {
+      setError(err.message || 'Failed to update saved reply.');
+    }
+  }
+
+  async function handleSettingsSave(event) {
+    event.preventDefault();
+    if (!settings) return;
+
+    try {
+      const updated = await api.updateSettings(settings);
+      setSettings(updated);
+    } catch (err) {
+      setError(err.message || 'Failed to save settings.');
+    }
+  }
+
+  function openMessageDetail(id) {
+    setSelectedMessageId(id);
+    setCurrentView('detail');
   }
 
   return (
-    <div className="app">
-      <header>
-        <h1>HD Performance Tracker MVP</h1>
+    <div className="app-shell">
+      <header className="top-nav">
+        <h1>Message Control System</h1>
+        <nav>
+          <button className={currentView === 'dashboard' ? 'active' : ''} onClick={() => setCurrentView('dashboard')}>Dashboard</button>
+          <button className={currentView === 'saved' ? 'active' : ''} onClick={() => setCurrentView('saved')}>Saved Replies</button>
+          <button className={currentView === 'settings' ? 'active' : ''} onClick={() => setCurrentView('settings')}>Settings</button>
+        </nav>
       </header>
 
       {error && <p className="error">{error}</p>}
 
-      <section className="dashboard-cards">
-        <article>
-          <h2>Active Students</h2>
-          <p>{dashboard.activeStudents}</p>
-        </article>
-        <article>
-          <h2>Active Packages</h2>
-          <p>{dashboard.activePackages}</p>
-        </article>
-        <article>
-          <h2>Renewal Risk</h2>
-          <p>{dashboard.renewalRisk}</p>
-        </article>
-      </section>
-
-      <section className="layout">
-        <aside className="panel">
-          <h3>Students</h3>
-          <ul className="student-list">
-            {students.map((student) => (
-              <li key={student.id}>
-                <button
-                  className={student.id === selectedStudentId ? 'selected' : ''}
-                  onClick={() => setSelectedStudentId(student.id)}
-                >
-                  {student.firstName} {student.lastName}
-                </button>
-              </li>
-            ))}
-          </ul>
-        </aside>
-
-        <main className="panel">
-          <h3>Student Detail</h3>
-          {selectedStudent ? (
-            <div>
-              <p>
-                <strong>Name:</strong> {selectedStudent.firstName} {selectedStudent.lastName}
-              </p>
-              <p>
-                <strong>Email:</strong> {selectedStudent.email}
-              </p>
-
-              <h4>Packages</h4>
-              <ul>
-                {selectedStudent.packages.map((pkg) => (
-                  <li key={pkg.id}>
-                    {pkg.packageName} — {pkg.usedSessions}/{pkg.totalSessions} used ({pkg.status})
-                  </li>
+      {currentView === 'dashboard' && (
+        <section className="dashboard">
+          <article className="panel">
+            <h2>Message Intake</h2>
+            <form className="stack" onSubmit={handleCreateMessage}>
+              <input required placeholder="Sender name" value={messageForm.senderName} onChange={(e) => setMessageForm((p) => ({ ...p, senderName: e.target.value }))} />
+              <select value={messageForm.source} onChange={(e) => setMessageForm((p) => ({ ...p, source: e.target.value }))}>
+                {metadata?.sourceOptions?.map((source) => (
+                  <option key={source} value={source}>{source}</option>
                 ))}
-              </ul>
+              </select>
+              <label>
+                Timestamp
+                <input type="datetime-local" value={messageForm.timestamp} onChange={(e) => setMessageForm((p) => ({ ...p, timestamp: e.target.value }))} />
+              </label>
+              <input placeholder="Contact (email or phone)" value={messageForm.contact} onChange={(e) => setMessageForm((p) => ({ ...p, contact: e.target.value }))} />
+              <textarea required placeholder="Paste full incoming message" value={messageForm.content} onChange={(e) => setMessageForm((p) => ({ ...p, content: e.target.value }))} />
+              <button type="submit">Add message</button>
+            </form>
+          </article>
 
-              <h4>Recent Sessions</h4>
-              <ul>
-                {selectedStudent.sessions.map((session) => (
-                  <li key={session.id}>
-                    {new Date(session.sessionDate).toLocaleDateString()} — {session.durationMinutes} min —{' '}
-                    {session.focusArea || 'General'}
-                  </li>
-                ))}
-              </ul>
-
-              <h4>Recent Notes</h4>
-              <ul>
-                {selectedStudent.notes.map((entry) => (
-                  <li key={entry.id}>
-                    {entry.category}: {entry.title}
-                  </li>
-                ))}
-              </ul>
+          <article className="panel">
+            <h2>Filter & Sort</h2>
+            <div className="filter-grid">
+              <select value={filters.status} onChange={(e) => setFilters((p) => ({ ...p, status: e.target.value }))}>
+                <option value="">All statuses</option>
+                {metadata?.statusOptions?.map((status) => <option key={status}>{status}</option>)}
+              </select>
+              <select value={filters.priority} onChange={(e) => setFilters((p) => ({ ...p, priority: e.target.value }))}>
+                <option value="">All priorities</option>
+                {metadata?.priorityOptions?.map((priority) => <option key={priority}>{priority}</option>)}
+              </select>
+              <select value={filters.category} onChange={(e) => setFilters((p) => ({ ...p, category: e.target.value }))}>
+                <option value="">All categories</option>
+                {metadata?.categoryOptions?.map((category) => <option key={category}>{category}</option>)}
+              </select>
+              <select value={filters.source} onChange={(e) => setFilters((p) => ({ ...p, source: e.target.value }))}>
+                <option value="">All sources</option>
+                {metadata?.sourceOptions?.map((source) => <option key={source}>{source}</option>)}
+              </select>
+              <select value={sort} onChange={(e) => setSort(e.target.value)}>
+                <option value="newest">Newest</option>
+                <option value="oldest">Oldest</option>
+                <option value="urgent">Urgent first</option>
+              </select>
             </div>
-          ) : (
-            <p>Select a student to view details.</p>
-          )}
-        </main>
-      </section>
+          </article>
 
-      <section className="forms-grid">
-        <form className="panel" onSubmit={handleCreateStudent}>
-          <h3>Create Student</h3>
-          <input placeholder="First name" value={studentForm.firstName} onChange={(e) => setStudentForm((p) => ({ ...p, firstName: e.target.value }))} required />
-          <input placeholder="Last name" value={studentForm.lastName} onChange={(e) => setStudentForm((p) => ({ ...p, lastName: e.target.value }))} required />
-          <input type="email" placeholder="Email" value={studentForm.email} onChange={(e) => setStudentForm((p) => ({ ...p, email: e.target.value }))} required />
-          <input placeholder="Phone" value={studentForm.phone} onChange={(e) => setStudentForm((p) => ({ ...p, phone: e.target.value }))} />
-          <input placeholder="Program" value={studentForm.program} onChange={(e) => setStudentForm((p) => ({ ...p, program: e.target.value }))} />
-          <input placeholder="Belt Rank" value={studentForm.beltRank} onChange={(e) => setStudentForm((p) => ({ ...p, beltRank: e.target.value }))} />
-          <button type="submit">Create Student</button>
-        </form>
+          <article className="panel">
+            <h2>Messages ({filteredMessages.length})</h2>
+            <div className="message-list">
+              {filteredMessages.map((message) => (
+                <button className="message-card" key={message.id} onClick={() => openMessageDetail(message.id)}>
+                  <div className="row between">
+                    <strong>{message.senderName}</strong>
+                    <span className={`pill priority-${message.priority.toLowerCase()}`}>{message.priority}</span>
+                  </div>
+                  <p>{message.content}</p>
+                  <div className="row between muted small">
+                    <span>{message.source}</span>
+                    <span>{new Date(message.timestamp).toLocaleString()}</span>
+                  </div>
+                  <div className="row between muted small">
+                    <span>{message.category}</span>
+                    <span>{message.status}</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </article>
+        </section>
+      )}
 
-        <form className="panel" onSubmit={handleCreatePackage}>
-          <h3>Create Package</h3>
-          <select value={packageForm.studentId} onChange={(e) => setPackageForm((p) => ({ ...p, studentId: e.target.value }))} required>
-            <option value="">Select student</option>
-            {students.map((student) => (
-              <option key={student.id} value={student.id}>
-                {student.firstName} {student.lastName}
-              </option>
+      {currentView === 'detail' && selectedMessage && (
+        <section className="panel detail-view">
+          <div className="row between">
+            <h2>Message Detail</h2>
+            <button onClick={() => setCurrentView('dashboard')}>Back</button>
+          </div>
+
+          <div className="detail-grid">
+            <div>
+              <p><strong>Sender:</strong> {selectedMessage.senderName}</p>
+              <p><strong>Source:</strong> {selectedMessage.source}</p>
+              <p><strong>Timestamp:</strong> {new Date(selectedMessage.timestamp).toLocaleString()}</p>
+              <p><strong>Status:</strong> {selectedMessage.status}</p>
+              <p><strong>Priority:</strong> {selectedMessage.priority}</p>
+              <p><strong>Contact:</strong> {selectedMessage.contact || 'Not provided'}</p>
+            </div>
+            <div>
+              <p><strong>Category:</strong> {selectedMessage.category}</p>
+              <p><strong>Urgency:</strong> {selectedMessage.urgency}</p>
+              <p><strong>Recommended Action:</strong> {selectedMessage.recommendedAction}</p>
+              <p><strong>Summary:</strong> {selectedMessage.summary}</p>
+            </div>
+          </div>
+
+          <h3>Incoming Message</h3>
+          <p className="message-body">{selectedMessage.content}</p>
+
+          <h3>Draft Reply (Edit before approval)</h3>
+          <textarea
+            value={selectedMessage.draftReply}
+            onChange={(e) => setSelectedMessage((p) => ({ ...p, draftReply: e.target.value }))}
+          />
+
+          <div className="row wrap">
+            <select value={quickReplyId} onChange={(e) => setQuickReplyId(e.target.value)}>
+              <option value="">Insert saved reply...</option>
+              {savedReplies.map((reply) => (
+                <option key={reply.id} value={reply.id}>{reply.label}</option>
+              ))}
+            </select>
+            <button
+              onClick={() => {
+                const selected = savedReplies.find((reply) => String(reply.id) === quickReplyId);
+                if (!selected) return;
+                setSelectedMessage((prev) => ({ ...prev, draftReply: `${prev.draftReply} ${selected.text}`.trim() }));
+              }}
+            >
+              Insert
+            </button>
+            <button onClick={() => handleMessageUpdate({ draftReply: selectedMessage.draftReply })}>Save Draft</button>
+            <button onClick={() => handleMessageUpdate({ status: 'Approved', draftReply: selectedMessage.draftReply })}>Approve</button>
+            <button onClick={() => handleMessageUpdate({ status: 'Sent' })}>Mark Sent</button>
+            <button onClick={handleSendToZapier} disabled={!selectedMessage.draftReply}>
+              Send to Zapier
+            </button>
+            <button onClick={() => handleMessageUpdate({ status: 'Waiting' })}>Set Waiting</button>
+            <button onClick={() => handleMessageUpdate({ status: 'Ignored' })}>Ignore</button>
+          </div>
+
+          <h3>Private Internal Note</h3>
+          <textarea
+            value={selectedMessage.internalNote || ''}
+            onChange={(e) => setSelectedMessage((p) => ({ ...p, internalNote: e.target.value }))}
+          />
+          <button onClick={() => handleMessageUpdate({ internalNote: selectedMessage.internalNote || '' })}>Save Note</button>
+        </section>
+      )}
+
+      {currentView === 'saved' && (
+        <section className="panel">
+          <h2>Saved Replies</h2>
+          <form className="stack" onSubmit={handleSavedReplyCreate}>
+            <input required placeholder="Label" value={savedReplyForm.label} onChange={(e) => setSavedReplyForm((p) => ({ ...p, label: e.target.value }))} />
+            <textarea required placeholder="Reply text" value={savedReplyForm.text} onChange={(e) => setSavedReplyForm((p) => ({ ...p, text: e.target.value }))} />
+            <button type="submit">Add saved reply</button>
+          </form>
+
+          <div className="saved-list">
+            {savedReplies.map((reply) => (
+              <div className="saved-card" key={reply.id}>
+                <input value={reply.label} onChange={(e) => handleSavedReplyChange(reply.id, { label: e.target.value, text: reply.text })} />
+                <textarea value={reply.text} onChange={(e) => handleSavedReplyChange(reply.id, { label: reply.label, text: e.target.value })} />
+              </div>
             ))}
-          </select>
-          <input placeholder="Package name" value={packageForm.packageName} onChange={(e) => setPackageForm((p) => ({ ...p, packageName: e.target.value }))} required />
-          <input type="number" min="1" placeholder="Total sessions" value={packageForm.totalSessions} onChange={(e) => setPackageForm((p) => ({ ...p, totalSessions: e.target.value }))} required />
-          <input type="number" min="0" step="0.01" placeholder="Price paid" value={packageForm.pricePaid} onChange={(e) => setPackageForm((p) => ({ ...p, pricePaid: e.target.value }))} required />
-          <label>
-            Start date
-            <input type="date" value={packageForm.startDate} onChange={(e) => setPackageForm((p) => ({ ...p, startDate: e.target.value }))} required />
-          </label>
-          <label>
-            Expires at (optional)
-            <input type="date" value={packageForm.expiresAt} onChange={(e) => setPackageForm((p) => ({ ...p, expiresAt: e.target.value }))} />
-          </label>
-          <button type="submit">Create Package</button>
-        </form>
+          </div>
+        </section>
+      )}
 
-        <form className="panel" onSubmit={handleLogSession}>
-          <h3>Log Session</h3>
-          <select value={sessionForm.studentId} onChange={(e) => setSessionForm((p) => ({ ...p, studentId: e.target.value }))} required>
-            <option value="">Select student</option>
-            {students.map((student) => (
-              <option key={student.id} value={student.id}>
-                {student.firstName} {student.lastName}
-              </option>
-            ))}
-          </select>
-          <select value={sessionForm.privatePackageId} onChange={(e) => setSessionForm((p) => ({ ...p, privatePackageId: e.target.value }))}>
-            <option value="">No package</option>
-            {sessionStudentPackages.map((pkg) => (
-              <option key={pkg.id} value={pkg.id}>
-                {pkg.packageName} ({pkg.totalSessions - pkg.usedSessions} left)
-              </option>
-            ))}
-          </select>
-          <label>
-            Session date
-            <input type="date" value={sessionForm.sessionDate} onChange={(e) => setSessionForm((p) => ({ ...p, sessionDate: e.target.value }))} required />
-          </label>
-          <input type="number" min="1" placeholder="Duration (minutes)" value={sessionForm.durationMinutes} onChange={(e) => setSessionForm((p) => ({ ...p, durationMinutes: e.target.value }))} required />
-          <input placeholder="Focus area" value={sessionForm.focusArea} onChange={(e) => setSessionForm((p) => ({ ...p, focusArea: e.target.value }))} />
-          <input placeholder="Coach name" value={sessionForm.coachName} onChange={(e) => setSessionForm((p) => ({ ...p, coachName: e.target.value }))} />
-          <textarea placeholder="Notes" value={sessionForm.notes} onChange={(e) => setSessionForm((p) => ({ ...p, notes: e.target.value }))} />
-          <button type="submit">Log Session</button>
-        </form>
+      {currentView === 'settings' && settings && (
+        <section className="panel">
+          <h2>Settings</h2>
+          <form className="stack" onSubmit={handleSettingsSave}>
+            <label>
+              Default tone
+              <select value={settings.defaultTone} onChange={(e) => setSettings((p) => ({ ...p, defaultTone: e.target.value }))}>
+                {metadata?.toneOptions?.map((tone) => <option key={tone}>{tone}</option>)}
+              </select>
+            </label>
 
-        <form className="panel" onSubmit={handleCreateNote}>
-          <h3>Add Progress Note</h3>
-          <select value={noteForm.studentId} onChange={(e) => setNoteForm((p) => ({ ...p, studentId: e.target.value }))} required>
-            <option value="">Select student</option>
-            {students.map((student) => (
-              <option key={student.id} value={student.id}>
-                {student.firstName} {student.lastName}
-              </option>
-            ))}
-          </select>
-          <input placeholder="Category" value={noteForm.category} onChange={(e) => setNoteForm((p) => ({ ...p, category: e.target.value }))} required />
-          <input placeholder="Title" value={noteForm.title} onChange={(e) => setNoteForm((p) => ({ ...p, title: e.target.value }))} required />
-          <textarea placeholder="Note" value={noteForm.note} onChange={(e) => setNoteForm((p) => ({ ...p, note: e.target.value }))} required />
-          <input type="number" placeholder="Score (optional)" value={noteForm.score} onChange={(e) => setNoteForm((p) => ({ ...p, score: e.target.value }))} />
-          <button type="submit">Add Note</button>
-        </form>
-      </section>
+            <label>
+              Preferred signature
+              <input value={settings.preferredSignature} onChange={(e) => setSettings((p) => ({ ...p, preferredSignature: e.target.value }))} />
+            </label>
 
-      <section className="panel">
-        <h3>Renewal Visibility (≤ 2 sessions remaining)</h3>
-        <ul>
-          {renewals.map((pkg) => (
-            <li key={pkg.id}>
-              {pkg.student.firstName} {pkg.student.lastName} — {pkg.packageName} ({pkg.totalSessions - pkg.usedSessions} left)
-            </li>
-          ))}
-        </ul>
-      </section>
+            <label>
+              Auto-priority rules placeholder
+              <textarea
+                value={settings.autoPriorityRulesPlaceholder}
+                onChange={(e) => setSettings((p) => ({ ...p, autoPriorityRulesPlaceholder: e.target.value }))}
+              />
+            </label>
+
+            <label>
+              AI prompt template placeholder
+              <textarea
+                value={settings.aiPromptTemplatePlaceholder}
+                onChange={(e) => setSettings((p) => ({ ...p, aiPromptTemplatePlaceholder: e.target.value }))}
+              />
+            </label>
+
+            <button type="submit">Save settings</button>
+          </form>
+        </section>
+      )}
     </div>
   );
 }
